@@ -5,10 +5,15 @@ import logging
 import typing
 from requests.auth import HTTPBasicAuth
 
+from .const import DOMAIN
+
+# from const import DOMAIN
+
 from homeassistant import config_entries, core
 from homeassistant.const import CONF_HOST, CONF_USERNAME, CONF_PASSWORD
 
 _LOG = logging.getLogger(__name__)
+PLATFORMS = ["light"]  # , "binary_sensor", "sensor"]
 
 
 class AuthException(Exception):
@@ -27,6 +32,7 @@ class Accessory(object):
         location: str,
         channel_type: str,
         data_points: typing.List,
+        trade: str,
     ) -> None:
         super().__init__()
         self._uid = uid
@@ -34,6 +40,7 @@ class Accessory(object):
         self._location = location
         self._channel_type = channel_type
         self._data_points = data_points
+        self._trade = trade
 
     @property
     def uid(self) -> str:
@@ -54,6 +61,10 @@ class Accessory(object):
     @property
     def data_points(self) -> typing.List:
         return self._data_points
+
+    @property
+    def trade(self) -> str:
+        return self._trade
 
     def __repr__(self) -> str:
         return f"<Accessory: {self.display_name}({self.uid})@{self.location}>"
@@ -113,6 +124,7 @@ class HomeServer(object):
         """Transforms the local list of acessories into items recognizable by the system"""
         _LOG.debug("Transforming all accessories")
         location_map = self.buildLocationMap(self.data["locations"])
+        trade_map = self.buildTrades(self.data["trades"])
         result = []
         for fn in self.data["functions"]:
             loc = location_map.get(fn["uid"], "None")
@@ -123,6 +135,7 @@ class HomeServer(object):
                     loc,
                     fn["channelType"],
                     fn["dataPoints"],
+                    trade_map.get(fn["uid"], "None"),
                 )
             )
         return result
@@ -137,6 +150,13 @@ class HomeServer(object):
                 result[f] = new_parent
             tmp = self.buildLocationMap(d["locations"], new_parent)
             result.update(tmp)
+        return result
+
+    def buildTrades(self, data: typing.List) -> typing.Dict[str, str]:
+        result = {}
+        for t in data:
+            for fn in t["functions"]:
+                result[fn] = t["tradeType"]
         return result
 
     def getValue(self, uid: str) -> V:
@@ -182,13 +202,22 @@ class HomeServerHass:
         await self._hass.async_add_executor_job(self.api.fetchAllObjects)
         # Transform the items in things we can reason about.
         self._accessories = self.api.transformAccessories()
+
+        # Add the current instance to the config context
+        self._hass.data.setdefault(DOMAIN, {})[self._config.entry_id] = self
+        # Tell the system to update the lights
+        self._hass.config_entries.async_setup_platforms(self._config, ["light"])
         return True
+
+    @property
+    def lights(self):
+        return [x for x in self._accessories if x.trade == "Lighting"]
 
 
 if __name__ == "__main__":
     import os
 
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     logging.debug("Start...")
     logging.debug(f"Connecting with User : {os.environ.get('HS_USERNAME')}")
     hs = HomeServer(
@@ -199,6 +228,7 @@ if __name__ == "__main__":
 
     objs = hs.transformAccessories()
     for o in objs:
+        print(o.channel_type, o.display_name, o.trade)
         if o.uid == "f287":
             fn = o.data_points[0]["uid"]
             print(hs.getValue(fn))

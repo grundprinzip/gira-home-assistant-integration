@@ -5,6 +5,11 @@ import logging
 import typing
 from requests.auth import HTTPBasicAuth
 
+from homeassistant import config_entries, core
+from homeassistant.const import CONF_HOST, CONF_USERNAME, CONF_PASSWORD
+
+_LOG = logging.getLogger(__name__)
+
 
 class AuthException(Exception):
     pass
@@ -73,8 +78,8 @@ class HomeServer(object):
     def login(self) -> bool:
         """Login to the Gira HS and obtain a new toke for the application"""
         endpoint = f"https://{self.host}/api/clients"
-        logging.debug(f"Connecting to: {endpoint}")
-        logging.debug(f'{{client:"{HomeServer.CLIENT}"}}')
+        _LOG.info(f"Connecting to: {endpoint} {self.username} {self.password}")
+        _LOG.info(f'{{client:"{HomeServer.CLIENT}"}}')
         response = requests.post(
             endpoint,
             data=json.dumps({"client": HomeServer.CLIENT}),
@@ -82,11 +87,11 @@ class HomeServer(object):
             verify=False,
         )
         if response.status_code != 200:
-            logging.error(f"Error loging in {response.text}")
+            # _LOG.error(f"Error loging in {response.text}")
             raise AuthException(f"Could not login to Gira HS at {self.host}")
         data = response.json()
         self.token = data["token"]
-        logging.debug("Received token from HS.")
+        # _LOG.debug("Received token from HS.")
         return True
 
     def fetchAllObjects(self) -> None:
@@ -100,13 +105,13 @@ class HomeServer(object):
             verify=False,
         )
         if response.status_code != 200:
-            logging.error(f"Error fetching KOs {response.text}")
+            _LOG.error(f"Error fetching KOs {response.text}")
             raise FetchException("Could not fetch KOs")
         self.data = response.json()
 
     def transformAccessories(self) -> AccessoryList:
         """Transforms the local list of acessories into items recognizable by the system"""
-        logging.debug("Transforming all accessories")
+        _LOG.debug("Transforming all accessories")
         location_map = self.buildLocationMap(self.data["locations"])
         result = []
         for fn in self.data["functions"]:
@@ -155,6 +160,29 @@ class HomeServer(object):
             if v["uid"] == uid:
                 return v["value"]
         return None
+
+
+class HomeServerHass:
+    def __init__(
+        self, hass: core.HomeAssistant, entry: config_entries.ConfigEntry
+    ) -> None:
+        self.api = HomeServer(
+            entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD], entry.data[CONF_HOST]
+        )
+        self._hass = hass
+        self._config = entry
+        self._accessories: typing.List[Accessory]
+
+    async def setup(self) -> bool:
+        """Do the intiial setup of the HomeServer"""
+        # Login.
+        if not await self._hass.async_add_executor_job(self.api.login):
+            return False
+        # Fetch all known items.
+        await self._hass.async_add_executor_job(self.api.fetchAllObjects)
+        # Transform the items in things we can reason about.
+        self._accessories = self.api.transformAccessories()
+        return True
 
 
 if __name__ == "__main__":

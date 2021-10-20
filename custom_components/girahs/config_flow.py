@@ -17,7 +17,9 @@ OptStrStrMap = typing.TypeVar("OptStrStrMap", dict[str, str], None)
 
 
 class GiraHomeAssistantIntegration(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a FRITZ!Box Tools config flow."""
+    """One simple configuration flow to configure the Gira HomeServer connection.
+
+    TODO: reauth"""
 
     VERSION = 1
 
@@ -34,9 +36,10 @@ class GiraHomeAssistantIntegration(config_entries.ConfigFlow, domain=DOMAIN):
         if not self._host or not self._username or not self._password:
             return "missing_config_value"
 
-        self._gira = HomeServer(self._username, self._password, self._host)
+        g = HomeServer(self._username, self._password, self._host)
         try:
-            self._gira.login()
+            await self.hass.async_add_executor_job(g.login)
+            self._gira = g
             return None
         except AuthException:
             return "invalid_auth"
@@ -58,9 +61,11 @@ class GiraHomeAssistantIntegration(config_entries.ConfigFlow, domain=DOMAIN):
         if error:
             return self._show_setup_form_init({"base": error})
 
-        pass
+        return self._async_create_entry()
 
-    async def async_check_configured_entry(self) -> config_entries.ConfigEntries | None:
+    async def async_check_configured_entry(
+        self,
+    ) -> typing.Optional[config_entries.ConfigEntries]:
         """Check if entry is configured."""
         for entry in self._async_current_entries(include_ignore=False):
             if entry.data[CONF_HOST] == self._host:
@@ -74,8 +79,8 @@ class GiraHomeAssistantIntegration(config_entries.ConfigFlow, domain=DOMAIN):
             title=self._name,
             data={
                 CONF_HOST: self._host,
-                CONF_PASSWORD: self._username,
-                CONF_USERNAME: self._password,
+                CONF_PASSWORD: self._password,
+                CONF_USERNAME: self._username,
             },
         )
 

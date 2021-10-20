@@ -1,1 +1,2 @@
 DEFAULT_HOST = "192.168.178.5"
+DOMAIN = "girahs"

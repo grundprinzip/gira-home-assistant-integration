@@ -10,7 +10,7 @@ import logging
 
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD, CONF_HOST
 
-_LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 OptStrAnyMap = typing.TypeVar("OptStrAnyMap", dict[str, typing.Any], None)
 OptStrStrMap = typing.TypeVar("OptStrStrMap", dict[str, str], None)
@@ -55,8 +55,9 @@ class GiraHomeAssistantIntegration(config_entries.ConfigFlow, domain=DOMAIN):
         self._password = user_input[CONF_PASSWORD]
 
         if not (error := await self.init_home_server()):
-            if await self.async_check_configured_entry():
-                error = "already_configured"
+            e = await self.async_check_configured_entry()
+            if e:
+                return self.async_abort(reason="single_instance_allowed")
 
         if error:
             return self._show_setup_form_init({"base": error})

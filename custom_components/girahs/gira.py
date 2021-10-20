@@ -1,11 +1,15 @@
 from collections import UserDict
+from functools import partial
 import json
 import requests
 import logging
 import typing
 from requests.auth import HTTPBasicAuth
 
-from .const import DOMAIN
+try:
+    from .const import DOMAIN
+except ImportError:
+    from const import DOMAIN
 
 # from const import DOMAIN
 
@@ -13,7 +17,6 @@ from homeassistant import config_entries, core
 from homeassistant.const import CONF_HOST, CONF_USERNAME, CONF_PASSWORD
 
 _LOG = logging.getLogger(__name__)
-PLATFORMS = ["light"]  # , "binary_sensor", "sensor"]
 
 
 class AuthException(Exception):
@@ -169,17 +172,20 @@ class HomeServer(object):
                 return v["value"]
         return None
 
+    def getValues(self, uid: str) -> typing.List[typing.Dict[str, V]]:
+        endpoint = f"https://{self.host}/api/values/{uid}"
+        response = requests.get(endpoint, params={"token": self.token}, verify=False)
+        if response.status_code != 200:
+            raise FetchException(f"Could not load values for {uid}")
+        return response.json()["values"]
+
     def setValue(self, uid: str, value: V) -> None:
         endpoint = f"https://{self.host}/api/values/{uid}"
         response = requests.put(
-            endpoint, data={"value": value}, params={"token": self.token}, verify=False
+            endpoint, json={"value": value}, params={"token": self.token}, verify=False
         )
         if response.status_code != 200:
-            raise FetchException(f"Could not load value for {uid}")
-        for v in response.json()["values"]:
-            if v["uid"] == uid:
-                return v["value"]
-        return None
+            raise FetchException(f"Could not set value for {uid}")
 
 
 class HomeServerHass:
@@ -206,12 +212,27 @@ class HomeServerHass:
         # Add the current instance to the config context
         self._hass.data.setdefault(DOMAIN, {})[self._config.entry_id] = self
         # Tell the system to update the lights
-        self._hass.config_entries.async_setup_platforms(self._config, ["light"])
+        self._hass.config_entries.async_setup_platforms(
+            self._config, ["light", "cover"]
+        )
         return True
 
     @property
     def lights(self):
         return [x for x in self._accessories if x.trade == "Lighting"]
+
+    @property
+    def covers(self):
+        return [x for x in self._accessories if x.trade == "Covering"]
+
+    async def get_value(self, uid: str) -> V:
+        return await self._hass.async_add_executor_job(partial(self.api.getValue, uid))
+
+    async def get_values(self, uid: str) -> typing.List[typing.Dict[str, V]]:
+        return await self._hass.async_add_executor_job(partial(self.api.getValues, uid))
+
+    async def set_value(self, uid: str, value: V) -> None:
+        await self._hass.async_add_executor_job(partial(self.api.setValue, uid, value))
 
 
 if __name__ == "__main__":
@@ -228,9 +249,6 @@ if __name__ == "__main__":
 
     objs = hs.transformAccessories()
     for o in objs:
-        print(o.channel_type, o.display_name, o.trade)
-        if o.uid == "f287":
-            fn = o.data_points[0]["uid"]
-            print(hs.getValue(fn))
+        print(o.channel_type, o.display_name, o.trade, o.data_points)
 
     # logging.debug(hs.transformAccessories())

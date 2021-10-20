@@ -213,7 +213,7 @@ class HomeServerHass:
         self._hass.data.setdefault(DOMAIN, {})[self._config.entry_id] = self
         # Tell the system to update the lights
         self._hass.config_entries.async_setup_platforms(
-            self._config, ["light", "cover"]
+            self._config, ["light", "cover", "climate"]
         )
         return True
 
@@ -224,6 +224,10 @@ class HomeServerHass:
     @property
     def covers(self):
         return [x for x in self._accessories if x.trade == "Covering"]
+
+    @property
+    def hvac(self):
+        return [x for x in self._accessories if x.trade == "HVAC"]
 
     async def get_value(self, uid: str) -> V:
         return await self._hass.async_add_executor_job(partial(self.api.getValue, uid))

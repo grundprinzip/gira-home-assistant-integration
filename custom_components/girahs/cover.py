@@ -16,7 +16,6 @@ from homeassistant.components.cover import (
     CoverEntity,
 )
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .gira import Accessory, HomeServerHass
@@ -45,7 +44,6 @@ async def async_update_items(
 ) -> None:
     new_entities = []
     for c in api.covers:
-
         new_entities.append(HomeServerCover(c, api))
     logger.info("Found %d covers", len(new_entities))
     if new_entities:

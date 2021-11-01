@@ -1,10 +1,17 @@
-from collections import UserDict
-from functools import partial
-import json
-import requests
+import asyncio
 import logging
 import typing
+import json
+import websockets
+from websockets.exceptions import ConnectionClosed
+
+from collections import UserDict
+from functools import partial
 from requests.auth import HTTPBasicAuth
+from custom_components.girahs.entity import GiraEntity
+
+from homeassistant.helpers import entity
+
 
 try:
     from .const import DOMAIN
@@ -13,7 +20,8 @@ except ImportError:
 
 # from const import DOMAIN
 
-from homeassistant import config_entries, core
+from homeassistant import config_entries, core, exceptions, helpers
+from homeassistant.helpers.entity import Entity
 from homeassistant.const import CONF_HOST, CONF_USERNAME, CONF_PASSWORD
 
 _LOG = logging.getLogger(__name__)
@@ -77,182 +85,58 @@ AccessoryList = list[Accessory]
 V = typing.TypeVar("V", str, int, float, bool, None)
 
 
-class HomeServer(object):
+class HomeServerV2(object):
+    def __init__(self, config: config_entries.ConfigType) -> None:
+        self._host = config[DOMAIN][CONF_HOST]
+        self.switches = config[DOMAIN]["switch"]
+        self.covers = config[DOMAIN]["cover"]
+        self.lights = config[DOMAIN]["light"]
+        self.sensors = config[DOMAIN]["sensor"]
+        self.climates = config[DOMAIN]["climate"]
+        self.weathers = config[DOMAIN]["weather"]
+        self._entities: dict[str, GiraEntity] = {}
 
-    CLIENT = "HomeAssistant"
+    def add_entity(self, address: str, entity: GiraEntity) -> None:
+        _LOG.info("Adding entity %s %s", address, entity)
+        self._entities[address] = entity
+        pass
 
-    def __init__(self, username, password, host) -> None:
-        super().__init__()
-        # Create empty token
-        self.token = ""
-        self.username = username
-        self.password = password
-        self.host = host
+    async def send_command(self, cmd: dict) -> None:
+        await self._websocket.send(json.dumps(cmd))
 
-    def login(self) -> bool:
-        """Login to the Gira HS and obtain a new toke for the application"""
-        endpoint = f"https://{self.host}/api/clients"
-        _LOG.info(f"Connecting to: {endpoint} {self.username} {self.password}")
-        _LOG.info(f'{{client:"{HomeServer.CLIENT}"}}')
-        response = requests.post(
-            endpoint,
-            data=json.dumps({"client": HomeServer.CLIENT}),
-            auth=HTTPBasicAuth(self.username, self.password),
-            verify=False,
-        )
-        if response.status_code != 200:
-            # _LOG.error(f"Error loging in {response.text}")
-            raise AuthException(f"Could not login to Gira HS at {self.host}")
-        data = response.json()
-        self.token = data["token"]
-        # _LOG.debug("Received token from HS.")
-        return True
+    async def handle_value_changed(self, cmd: dict) -> None:
+        """
+        Dict in the form of {cmd: type, ga: address, value: val}
+        """
+        if not "ga" in cmd:
+            return
 
-    def fetchAllObjects(self) -> None:
-        """Fetches all configuration objects from Gira HS. After all data is fetched,
-        the data can be transformed into local objects."""
+        ga = int(cmd["ga"])
+        x = int(ga / 2048)
+        y = int((ga - x * 2048) / 256)
+        z = int((ga - x * 2048 - y * 256))
+        address = f"{x}/{y}/{z}"
 
-        endpoint = f"https://{self.host}/api/uiconfig"
-        response = requests.get(
-            endpoint,
-            params={"token": self.token, "expand": "parameters,locations,trades"},
-            verify=False,
-        )
-        if response.status_code != 200:
-            _LOG.error(f"Error fetching KOs {response.text}")
-            raise FetchException("Could not fetch KOs")
-        self.data = response.json()
+        if address in self._entities:
+            # Add the translated address to the object and defer execution into a new task
+            # to avoid blocking the IO.
+            cmd["address"] = address
+            asyncio.create_task(self._entities[address].handle_cmd(cmd))
 
-    def transformAccessories(self) -> AccessoryList:
-        """Transforms the local list of acessories into items recognizable by the system"""
-        _LOG.debug("Transforming all accessories")
-        location_map = self.buildLocationMap(self.data["locations"])
-        trade_map = self.buildTrades(self.data["trades"])
-        result = []
-        for fn in self.data["functions"]:
-            loc = location_map.get(fn["uid"], "None")
-            result.append(
-                Accessory(
-                    fn["uid"],
-                    fn["displayName"],
-                    loc,
-                    fn["channelType"],
-                    fn["dataPoints"],
-                    trade_map.get(fn["uid"], "None"),
-                )
-            )
-        return result
+    async def process_gira_events(self) -> None:
+        """Connect to the homeserver and prcess inbound messages.
 
-    def buildLocationMap(self, data: typing.List, parent="") -> typing.Dict:
-        """Recursively processes the input map to build a proper UID to location naming"""
-        prefix = parent + "/" if len(parent) > 0 else parent
-        result = {}
-        for d in data:
-            new_parent = f"{prefix}{d['displayName']}"
-            for f in d["functions"]:
-                result[f] = new_parent
-            tmp = self.buildLocationMap(d["locations"], new_parent)
-            result.update(tmp)
-        return result
+        The loop will automatically reconnect if something breaks."""
+        async for websocket in websockets.connect(
+            f"ws://{self._host}/cogw?AUTHORIZATION="
+        ):
+            self._websocket = websocket
+            try:
+                while True:
+                    d = await websocket.recv()
+                    asyncio.create_task(self.handle_value_changed(json.loads(d)))
+            except ConnectionClosed:
+                continue
 
-    def buildTrades(self, data: typing.List) -> typing.Dict[str, str]:
-        result = {}
-        for t in data:
-            for fn in t["functions"]:
-                result[fn] = t["tradeType"]
-        return result
-
-    def getValue(self, uid: str) -> V:
-        endpoint = f"https://{self.host}/api/values/{uid}"
-        response = requests.get(endpoint, params={"token": self.token}, verify=False)
-        if response.status_code != 200:
-            raise FetchException(f"Could not load value for {uid}")
-        for v in response.json()["values"]:
-            if v["uid"] == uid:
-                return v["value"]
-        return None
-
-    def getValues(self, uid: str) -> typing.List[typing.Dict[str, V]]:
-        endpoint = f"https://{self.host}/api/values/{uid}"
-        response = requests.get(endpoint, params={"token": self.token}, verify=False)
-        if response.status_code != 200:
-            raise FetchException(f"Could not load values for {uid}")
-        return response.json()["values"]
-
-    def setValue(self, uid: str, value: V) -> None:
-        endpoint = f"https://{self.host}/api/values/{uid}"
-        response = requests.put(
-            endpoint, json={"value": value}, params={"token": self.token}, verify=False
-        )
-        if response.status_code != 200:
-            raise FetchException(f"Could not set value for {uid}")
-
-
-class HomeServerHass:
-    def __init__(
-        self, hass: core.HomeAssistant, entry: config_entries.ConfigEntry
-    ) -> None:
-        self.api = HomeServer(
-            entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD], entry.data[CONF_HOST]
-        )
-        self._hass = hass
-        self._config = entry
-        self._accessories: typing.List[Accessory]
-
-    async def setup(self) -> bool:
-        """Do the intiial setup of the HomeServer"""
-        # Login.
-        if not await self._hass.async_add_executor_job(self.api.login):
-            return False
-        # Fetch all known items.
-        await self._hass.async_add_executor_job(self.api.fetchAllObjects)
-        # Transform the items in things we can reason about.
-        self._accessories = self.api.transformAccessories()
-
-        # Add the current instance to the config context
-        self._hass.data.setdefault(DOMAIN, {})[self._config.entry_id] = self
-        # Tell the system to update the lights
-        self._hass.config_entries.async_setup_platforms(
-            self._config, ["light", "cover", "climate"]
-        )
-        return True
-
-    @property
-    def lights(self):
-        return [x for x in self._accessories if x.trade == "Lighting"]
-
-    @property
-    def covers(self):
-        return [x for x in self._accessories if x.trade == "Covering"]
-
-    @property
-    def hvac(self):
-        return [x for x in self._accessories if x.trade == "HVAC"]
-
-    async def get_value(self, uid: str) -> V:
-        return await self._hass.async_add_executor_job(partial(self.api.getValue, uid))
-
-    async def get_values(self, uid: str) -> typing.List[typing.Dict[str, V]]:
-        return await self._hass.async_add_executor_job(partial(self.api.getValues, uid))
-
-    async def set_value(self, uid: str, value: V) -> None:
-        await self._hass.async_add_executor_job(partial(self.api.setValue, uid, value))
-
-
-if __name__ == "__main__":
-    import os
-
-    logging.basicConfig(level=logging.INFO)
-    logging.debug("Start...")
-    logging.debug(f"Connecting with User : {os.environ.get('HS_USERNAME')}")
-    hs = HomeServer(
-        os.environ.get("HS_USERNAME"), os.environ.get("HS_PASSWORD"), "192.168.178.5"
-    )
-    hs.login()
-    hs.fetchAllObjects()
-
-    objs = hs.transformAccessories()
-    for o in objs:
-        print(o.channel_type, o.display_name, o.trade, o.data_points)
-
-    # logging.debug(hs.transformAccessories())
+    async def connect(self) -> None:
+        asyncio.create_task(self.process_gira_events())

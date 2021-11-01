@@ -1,137 +1,132 @@
+import asyncio
 from datetime import timedelta
 import logging
 from os import name
+from re import S
 import typing
-from custom_components.girahs.helper import to_gira_pct, to_hass_byte
+from custom_components.girahs import helper
+from custom_components.girahs.entity import GiraEntity
+from custom_components.girahs.helper import create_cmd, to_ga, to_gira_pct, to_hass_byte
 
-from homeassistant import core
+from homeassistant import core, helpers
 from homeassistant import config_entries
+from homeassistant.components import light
+from homeassistant.helpers.typing import DiscoveryInfoType
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     COLOR_MODE_BRIGHTNESS,
     COLOR_MODE_ONOFF,
+    SUPPORT_BRIGHTNESS,
     LightEntity,
 )
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .gira import Accessory, HomeServerHass
+from .gira import Accessory, HomeServerV2
 
-# Polling Interval used by the platform
-SCAN_INTERVAL = timedelta(seconds=5)
 
 logger = logging.getLogger(__name__)
 
 
-async def async_setup_entry(
+def setup_platform(
     hass: core.HomeAssistant,
-    config_entry: config_entries.ConfigEntry,
-    async_add_devices,
+    config: config_entries.ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: typing.Optional[DiscoveryInfoType] = None,
 ) -> None:
-    """Set up entry."""
-    api: HomeServerHass = hass.data[DOMAIN][config_entry.entry_id]
-    logger.debug("Setting up GiraHS lights %s", api.api.token)
+    logger.info("Setting up lights")
+    api: HomeServerV2 = hass.data[DOMAIN]["api"]
 
-    logger.debug("Triggering async loading of devices")
-    await async_update_items(hass, api, async_add_devices)
+    lights = [HomeServerLight(l, api) for l in api.lights]
+    # Adding lights
+    api.all_lights = lights
 
-
-async def async_update_items(
-    hass: core.HomeAssistant, api: HomeServerHass, async_add_devices
-) -> None:
-    new_lights = []
-    for l in api.lights:
-        new_lights.append(HomeServerLight(l, api))
-    logger.debug("Found %d lights", len(new_lights))
-    if new_lights:
-        async_add_devices(new_lights)
+    add_entities(lights)
 
 
-class HomeServerLight(LightEntity):
-    """An entity using CoordinatorEntity.
-
-    The CoordinatorEntity class provides:
-      should_poll
-      async_update
-      async_added_to_hass
-      available
-    """
-
-    def __init__(self, light: Accessory, api: HomeServerHass) -> None:
+class HomeServerLight(GiraEntity, LightEntity):
+    def __init__(self, light: dict, api: HomeServerV2) -> None:
         super().__init__()
-        self._api = api
-        self._is_on = False
-        self._brightness = 0
-        self._light = light
 
-        # Convert the data points to
-        self._functions = {k["name"]: k["uid"] for k in self._light.data_points}
+        self._attr_unique_id = light["address"][0]
+        self._attr_is_on = True
+        self._attr_brightness = 128
+        self._attr_name = light["name"]
+        self._attr_state_address = light["state_address"][0]
+        self._attr_address = light["address"][0]
+        self._attr_brightness_address = (
+            light["brightness_address"][0] if "brightness_address" in light else None
+        )
 
-    @property
-    def unique_id(self) -> typing.Optional[str]:
-        return self._light.uid
+        # Color Mode
+        if "brightness_address" in light:
+            self._attr_color_mode = COLOR_MODE_BRIGHTNESS
+            self._attr_supported_color_modes = set(
+                [COLOR_MODE_ONOFF, COLOR_MODE_BRIGHTNESS]
+            )
+            self._attr_supported_features = SUPPORT_BRIGHTNESS
+            pass
+        else:
+            self._attr_color_mode = COLOR_MODE_ONOFF
+            self._attr_supported_color_modes = set(COLOR_MODE_ONOFF)
+            pass
 
-    @property
-    def device_id(self) -> typing.Optional[str]:
-        return self.unique_id
+        logger.info("%s %s", self._attr_name, self._attr_color_mode)
 
-    @property
-    def name(self) -> typing.Optional[str]:
-        return f"{self._light.display_name} ({self._light.location})"
+        # Subscribe to updates on the on-off
+        api.add_entity(self._attr_state_address, self)
+        # Subscribe to updates on the brightness
+        api.add_entity(self._attr_brightness_address, self)
+        self._attr_api = api
 
-    @property
-    def device_info(self) -> typing.Optional[DeviceInfo]:
-        info = {
-            "identifiers": {(DOMAIN, self.device_id)},
-            "name": self.name,
-            "manufacturer": "Gira HomeServer Passthrough",
-            "via_device": (DOMAIN, "HomeServer"),
-        }
-        return info
+    async def handle_cmd(self, cmd: dict) -> None:
+        dirty = False
+        # Handle On Off
+        if cmd["address"] == self._attr_state_address:
+            # Turn off
+            if cmd["value"] == 0 and self._attr_is_on:
+                self._attr_is_on = False
+                dirty = True
+            # Turn On
+            if cmd["value"] == 1 and not self._attr_is_on:
+                self._attr_is_on = True
+                dirty = True
 
-    @property
-    def supported_color_modes(self) -> typing.Optional[set[str]]:
-        tmp = set(COLOR_MODE_ONOFF)
-        if len([x for x in self._light.data_points if x["name"] == "Brightness"]):
-            tmp.add(COLOR_MODE_BRIGHTNESS)
-        return tmp
+        # Handle Brightness
+        if cmd["address"] == self._attr_brightness_address:
+            value = cmd["value"]
+            if cmd["cmd"] == 1 and value != self._attr_brightness:
+                self._attr_brightness = helper.to_hass_byte(value)
+                dirty = True
+            if cmd["cmd"] == 2:
+                self._attr_brightness += helper.to_hass_byte(value)
+                dirty = True
+
+        if dirty:
+            self.schedule_update_ha_state()
+
+    def should_poll(self) -> bool:
+        return False
 
     async def async_turn_on(self, **kwargs):
-        """Turn device on."""
-        logger.debug("Attributes %s", kwargs)
-        if not self._is_on:
-            self._is_on = True
-            if ATTR_BRIGHTNESS in kwargs:
-                val = to_gira_pct(kwargs[ATTR_BRIGHTNESS])
-                await self._api.set_value(self._functions["Brightness"], val)
-            else:
-                await self._api.set_value(self._functions["OnOff"], True)
-        else:
-            if ATTR_BRIGHTNESS in kwargs:
-                logger.debug("Attributes %s  %s", self._functions["Brightness"], kwargs)
-                val = to_gira_pct(kwargs[ATTR_BRIGHTNESS])
-                await self._api.set_value(self._functions["Brightness"], val)
+        # Only if the lamp supports brightness allow changing the brightness.
+        if self._attr_color_mode == COLOR_MODE_BRIGHTNESS and ATTR_BRIGHTNESS in kwargs:
+            self._attr_brightness = kwargs.get(ATTR_BRIGHTNESS, 255)
+            cmd = create_cmd(
+                to_ga(self._attr_brightness_address), to_gira_pct(self._attr_brightness)
+            )
+            asyncio.create_task(self._attr_api.send_command(cmd))
 
-    async def async_turn_off(self, **kwargs):
-        """Turn device off."""
-        self._is_on = False
-        await self._api.set_value(self._functions["OnOff"], False)
+        # Changing brightness will turn the lamp on as well
+        if not self._attr_is_on and not ATTR_BRIGHTNESS in kwargs:
+            cmd = create_cmd(to_ga(self._attr_address), 1)
+            asyncio.create_task(self._attr_api.send_command(cmd))
+            self._attr_is_on = True
 
-    @property
-    def is_on(self) -> bool:
-        return self._is_on
-
-    @property
-    def brightness(self) -> typing.Optional[int]:
-        """Return the brightness of this light between 0..255."""
-        return self._brightness
-
-    async def async_update(self) -> None:
-        result = await self._api.get_values(self._light.uid)
-        for x in result:
-            if self._functions["OnOff"] == x["uid"]:
-                self._is_on = x["value"]
-            elif self._functions["Brightness"] == x["uid"]:
-                self._brightness = to_hass_byte(x["value"])
-        pass
+    async def async_turn_off(self, **kwargs: typing.Any) -> None:
+        if self._attr_is_on:
+            cmd = create_cmd(to_ga(self._attr_address), 0)
+            asyncio.create_task(self._attr_api.send_command(cmd))
+            self._attr_is_on = False

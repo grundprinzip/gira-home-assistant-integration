@@ -2,6 +2,7 @@ from datetime import timedelta
 import logging
 from os import name
 import typing
+from custom_components.girahs.entity import GiraEntity
 
 from homeassistant import core
 from homeassistant import config_entries
@@ -13,95 +14,73 @@ from homeassistant.components.climate.const import (
 )
 from homeassistant.const import ATTR_TEMPERATURE, TEMP_CELSIUS
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import DiscoveryInfoType
 
 from .const import DOMAIN
-from .gira import Accessory, HomeServerHass
-
-# Polling Interval used by the platform
-SCAN_INTERVAL = timedelta(seconds=30)
+from .gira import HomeServerV2
 
 logger = logging.getLogger(__name__)
 
 
-async def async_setup_entry(
+def setup_platform(
     hass: core.HomeAssistant,
-    config_entry: config_entries.ConfigEntry,
-    async_add_devices,
+    config: config_entries.ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: typing.Optional[DiscoveryInfoType] = None,
 ) -> None:
-    """Set up entry."""
-    api: HomeServerHass = hass.data[DOMAIN][config_entry.entry_id]
-    logger.info("Setting up GiraHS covers %s", api.api.token)
+    logger.debug("Setting up climate")
+    api: HomeServerV2 = hass.data[DOMAIN]["api"]
 
-    logger.info("Triggering async loading of devices")
-    await async_update_items(hass, api, async_add_devices)
+    accs = [HomeServerClimate(l, api) for l in api.climates]
 
-
-async def async_update_items(
-    hass: core.HomeAssistant, api: HomeServerHass, async_add_devices
-) -> None:
-    new_entities = []
-    for c in api.hvac:
-        new_entities.append(HomeServerClimate(c, api))
-    logger.info("Found %d covers", len(new_entities))
-    if new_entities:
-        async_add_devices(new_entities)
+    # Add the entities to Home Asssitant
+    add_entities(accs)
 
 
-class HomeServerClimate(ClimateEntity):
-    def __init__(self, c: Accessory, api: HomeServerHass) -> None:
-        super().__init__()
-        self._api = api
-        self._accessory = c
-        self._functions = {k["name"]: k["uid"] for k in self._accessory.data_points}
+class HomeServerClimate(GiraEntity, ClimateEntity):
+    def __init__(self, c: dict, api: HomeServerV2) -> None:
+        GiraEntity.__init__(self, c, api)
+        ClimateEntity.__init__(self)
+        self._attr_unique_id = c["temperature_address"][0]
+        self._attr_temperature_address = c["temperature_address"][0]
+        self._attr_target_temperature_state_address = c[
+            "target_temperature_state_address"
+        ][0]
 
-    @property
-    def unique_id(self) -> typing.Optional[str]:
-        return self._accessory.uid
+        self._attr_hvac_mode = HVAC_MODE_HEAT
+        self._attr_hvac_modes = [HVAC_MODE_HEAT]
+        self._attr_temperature_unit = TEMP_CELSIUS
+        self._attr_supported_features = SUPPORT_TARGET_TEMPERATURE
 
-    @property
-    def device_id(self) -> typing.Optional[str]:
-        return self.unique_id
+        # Register update handler
+        self._attr_api.add_entity(self._attr_temperature_address, self)
+        self._attr_api.add_entity(self._attr_target_temperature_state_address, self)
 
-    @property
-    def name(self) -> typing.Optional[str]:
-        return f"{self._accessory.display_name} ({self._accessory.location})"
+    def should_poll(self) -> bool:
+        return False
 
-    @property
-    def temperature_unit(self) -> str:
-        return TEMP_CELSIUS
+    async def handle_cmd(self, cmd: dict) -> None:
+        """This method is called for all registered state addresses that should be
+        observed"""
+        val = cmd["value"]
+        a = cmd["address"]
 
-    @property
-    def supported_features(self) -> int:
-        return SUPPORT_TARGET_TEMPERATURE
+        if (
+            a == self._attr_temperature_address
+            and val != self._attr_current_temperature
+        ):
+            self._attr_current_temperature = val
+            self.schedule_update_ha_state()
 
-    @property
-    def hvac_action(self) -> typing.Optional[str]:
-        return CURRENT_HVAC_HEAT
-
-    @property
-    def hvac_mode(self) -> str:
-        return HVAC_MODE_HEAT
-
-    def set_hvac_mode(self, hvac_mode: str) -> None:
-        pass
-
-    @property
-    def hvac_modes(self) -> list[str]:
-        return [HVAC_MODE_HEAT]
-
-    @property
-    def target_temperature_step(self) -> typing.Optional[float]:
-        return 1.0
+        if (
+            a == self._attr_target_temperature_state_address
+            and val != self._attr_target_temperature
+        ):
+            self._attr_target_temperature = val
+            self.schedule_update_ha_state()
 
     async def async_set_temperature(self, **kwargs):
         """Set new target temperature."""
         logger.info("%s", kwargs)
         # self._api.set_value(self._functions["Set-Point"], kwargs[ATTR_TEMPERATURE])
-
-    async def async_update(self) -> None:
-        result = await self._api.get_values(self._accessory.uid)
-        for x in result:
-            if self._functions["Current"] == x["uid"]:
-                self._attr_current_temperature = x["value"]
-            elif self._functions["Set-Point"] == x["uid"]:
-                self._attr_target_temperature = x["value"]

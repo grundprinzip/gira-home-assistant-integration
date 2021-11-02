@@ -18,13 +18,14 @@ from homeassistant.components.light import (
     COLOR_MODE_BRIGHTNESS,
     COLOR_MODE_ONOFF,
     SUPPORT_BRIGHTNESS,
+    Light,
     LightEntity,
 )
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .gira import Accessory, HomeServerV2
+from .gira import HomeServerV2
 
 
 logger = logging.getLogger(__name__)
@@ -36,24 +37,22 @@ def setup_platform(
     add_entities: AddEntitiesCallback,
     discovery_info: typing.Optional[DiscoveryInfoType] = None,
 ) -> None:
-    logger.info("Setting up lights")
+    logger.debug("Setting up lights")
     api: HomeServerV2 = hass.data[DOMAIN]["api"]
 
     lights = [HomeServerLight(l, api) for l in api.lights]
     # Adding lights
-    api.all_lights = lights
-
     add_entities(lights)
 
 
 class HomeServerLight(GiraEntity, LightEntity):
     def __init__(self, light: dict, api: HomeServerV2) -> None:
-        super().__init__()
+        GiraEntity.__init__(self, light, api)
+        LightEntity.__init__(self)
 
         self._attr_unique_id = light["address"][0]
         self._attr_is_on = True
         self._attr_brightness = 128
-        self._attr_name = light["name"]
         self._attr_state_address = light["state_address"][0]
         self._attr_address = light["address"][0]
         self._attr_brightness_address = (
@@ -73,13 +72,10 @@ class HomeServerLight(GiraEntity, LightEntity):
             self._attr_supported_color_modes = set(COLOR_MODE_ONOFF)
             pass
 
-        logger.info("%s %s", self._attr_name, self._attr_color_mode)
-
         # Subscribe to updates on the on-off
         api.add_entity(self._attr_state_address, self)
         # Subscribe to updates on the brightness
         api.add_entity(self._attr_brightness_address, self)
-        self._attr_api = api
 
     async def handle_cmd(self, cmd: dict) -> None:
         dirty = False

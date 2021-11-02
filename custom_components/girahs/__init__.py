@@ -3,14 +3,12 @@ from attr import has
 from custom_components.girahs.gira import HomeServerV2
 from homeassistant import config_entries, core
 from homeassistant.const import CONF_HOST
-from homeassistant.helpers import device_registry, config_validation
+from homeassistant.helpers import config_validation
 from .const import DOMAIN
 
 
 import homeassistant.components.knx.schema as sch
 
-import threading
-import time
 import logging
 import voluptuous as vol
 
@@ -41,4 +39,8 @@ async def async_setup(hass: core.HomeAssistant, config: config_entries.ConfigTyp
     gira = HomeServerV2(config)
     hass.data[DOMAIN] = {"api": gira}
     task = asyncio.create_task(gira.connect())
+
+    for p in ["light", "switch", "cover", "climate", "weather"]:
+        hass.helpers.discovery.load_platform(p, DOMAIN, {}, config)
+
     return True

@@ -66,6 +66,14 @@ class HomeServerWeather(GiraEntity, weather.WeatherEntity):
         self._attr_condition = ""
         self._attr_temperature = 0
 
+        for a in [
+            self._attr_address_temperature,
+            self._attr_address_wind_speed,
+            self._attr_address_wind_bearing,
+            self._attr_address_air_pressure,
+        ]:
+            self._attr_api.add_entity(a, self)
+
     async def handle_cmd(self, cmd: dict) -> None:
         value = cmd["value"]
 
@@ -73,8 +81,14 @@ class HomeServerWeather(GiraEntity, weather.WeatherEntity):
             self._attr_temperature = value
             self.schedule_update_ha_state()
 
+        if cmd["address"] == self._attr_address_air_pressure:
+            # resolution is 0.01 hpa ->
+            self._attr_pressure = value / 100
+            self.schedule_update_ha_state()
+
         if cmd["address"] == self._attr_address_wind_speed:
-            self._attr_wind_speed = value
+            # Resolution is
+            self._attr_wind_speed = value * 3.6
             self.schedule_update_ha_state()
 
         if cmd["address"] == self._attr_address_wind_bearing:

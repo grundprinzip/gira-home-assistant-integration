@@ -11,6 +11,7 @@ import homeassistant.components.knx.schema as sch
 
 import logging
 import voluptuous as vol
+import time
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -24,6 +25,7 @@ CONFIG_SCHEMA = vol.Schema(
                     **sch.WeatherSchema.platform_node(),
                     **sch.CoverSchema.platform_node(),
                     **sch.SensorSchema.platform_node(),
+                    **sch.BinarySensorSchema.platform_node(),
                 }
             )
         )
@@ -34,13 +36,18 @@ CONFIG_SCHEMA = vol.Schema(
 logger = logging.getLogger(__name__)
 
 
+async def delay_connect(gira: HomeServerV2) -> None:
+    time.sleep(10)
+    asyncio.create_task(gira.connect())
+
+
 async def async_setup(hass: core.HomeAssistant, config: config_entries.ConfigType):
     logger.info("Registering Gira KNX Gateway")
     gira = HomeServerV2(config)
     hass.data[DOMAIN] = {"api": gira}
-    task = asyncio.create_task(gira.connect())
 
-    for p in ["light", "switch", "cover", "climate", "weather"]:
+    for p in ["light", "switch", "cover", "climate", "weather", "binary_sensor"]:
         hass.helpers.discovery.load_platform(p, DOMAIN, {}, config)
 
+    asyncio.create_task(delay_connect(gira))
     return True

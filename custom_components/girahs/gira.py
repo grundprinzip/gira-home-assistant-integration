@@ -29,6 +29,7 @@ class HomeServerV2(object):
         self.sensors = config[DOMAIN]["sensor"]
         self.climates = config[DOMAIN]["climate"]
         self.weathers = config[DOMAIN]["weather"]
+        self.binary_sensors = config[DOMAIN]["binary_sensor"]
         self._entities: dict[str, GiraEntity] = {}
 
     def add_entity(self, address: str, entity: GiraEntity) -> None:
@@ -55,7 +56,7 @@ class HomeServerV2(object):
         address = f"{x}/{y}/{z}"
         cmd["address"] = address
 
-        logger.info("Received message: %s", cmd)
+        logger.debug("Received message: %s", cmd)
 
         if address in self._entities:
             # Add the translated address to the object and defer execution into a new task

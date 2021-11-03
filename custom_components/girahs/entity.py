@@ -1,8 +1,4 @@
-import abc
 from typing import Optional
-
-# from custom_components.girahs.gira import HomeServerV2
-
 from homeassistant.helpers import entity
 
 

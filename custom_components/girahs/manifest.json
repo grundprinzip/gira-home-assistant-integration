@@ -5,7 +5,7 @@
   "documentation": "https://github.com/grundprinzip/gira-home-assistant-integration",
   "dependencies": [],
   "codeowners": ["@grundprinzip"],
-  "requirements": ["requests", "untangle", "websockets"],
+  "requirements": ["requests", "untangle", "websockets", "xknx"],
   "iot_class": "local_push",
   "version": "0.0.1"
 }

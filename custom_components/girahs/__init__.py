@@ -46,7 +46,15 @@ async def async_setup(hass: core.HomeAssistant, config: config_entries.ConfigTyp
     gira = HomeServerV2(config)
     hass.data[DOMAIN] = {"api": gira}
 
-    for p in ["light", "switch", "cover", "climate", "weather", "binary_sensor"]:
+    for p in [
+        "light",
+        "switch",
+        "cover",
+        "climate",
+        "weather",
+        "binary_sensor",
+        "sensor",
+    ]:
         hass.helpers.discovery.load_platform(p, DOMAIN, {}, config)
 
     asyncio.create_task(delay_connect(gira))

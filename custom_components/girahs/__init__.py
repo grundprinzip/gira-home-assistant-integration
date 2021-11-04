@@ -9,9 +9,13 @@ from .const import DOMAIN
 
 import homeassistant.components.knx.schema as sch
 
+from functools import partial
+
 import logging
 import voluptuous as vol
 import time
+import threading
+
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -37,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 async def delay_connect(gira: HomeServerV2) -> None:
-    time.sleep(10)
+    asyncio.sleep(10)
     asyncio.create_task(gira.connect())
 
 
@@ -46,6 +50,7 @@ async def async_setup(hass: core.HomeAssistant, config: config_entries.ConfigTyp
     gira = HomeServerV2(config)
     hass.data[DOMAIN] = {"api": gira}
 
+    # Load all platforms
     for p in [
         "light",
         "switch",

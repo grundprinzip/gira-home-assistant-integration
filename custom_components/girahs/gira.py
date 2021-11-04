@@ -67,15 +67,17 @@ class HomeServerV2(object):
         """Connect to the homeserver and prcess inbound messages.
 
         The loop will automatically reconnect if something breaks."""
-        async for websocket in websockets.connect(
-            f"ws://{self._host}/cogw?AUTHORIZATION="
-        ):
-            self._websocket = websocket
+        while True:
+            self._websocket = await websockets.connect(
+                f"ws://{self._host}/cogw?AUTHORIZATION="
+            )
             try:
+                task = None
                 while True:
-                    d = await websocket.recv()
-                    asyncio.create_task(self.handle_value_changed(json.loads(d)))
+                    d = await self._websocket.recv()
+                    task = asyncio.create_task(self.handle_value_changed(json.loads(d)))
             except ConnectionClosed:
+                logger.error("Connection closed, reconnecting")
                 continue
 
     async def connect(self) -> None:

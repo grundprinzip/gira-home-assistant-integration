@@ -54,7 +54,8 @@ class HomeServerCover(GiraEntity, CoverEntity):
         self._attr_stop_address = cover["stop_address"][0]
 
         # Setup device class and supported features
-        self._attr_is_closed = None
+        # Setting "is_closed" to False will avoid issues when setting the position in a scene.
+        self._attr_is_closed = False
         self._attr_device_class = DEVICE_CLASS_SHADE
         self._attr_supported_features = (
             SUPPORT_OPEN | SUPPORT_CLOSE | SUPPORT_STOP | SUPPORT_SET_POSITION
@@ -73,6 +74,10 @@ class HomeServerCover(GiraEntity, CoverEntity):
         if val != self._attr_current_cover_position:
             logger.info("Updating state for %s", self._attr_position_address)
             self._attr_current_cover_position = val
+            if self._attr_current_cover_position < 100:
+                self._attr_is_closed = False
+            else:
+                self._attr_is_closed = True
             if self.hass is None:
                 return
             self.schedule_update_ha_state()

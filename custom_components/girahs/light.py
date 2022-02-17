@@ -18,7 +18,6 @@ from homeassistant.components.light import (
     COLOR_MODE_BRIGHTNESS,
     COLOR_MODE_ONOFF,
     SUPPORT_BRIGHTNESS,
-    Light,
     LightEntity,
 )
 from homeassistant.helpers.entity import DeviceInfo
